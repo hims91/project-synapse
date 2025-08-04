@@ -12,6 +12,7 @@ alembic==1.13.1
 
 # HTTP client and scraping
 httpx==0.25.2
+aiohttp==3.9.1
 beautifulsoup4==4.12.2
 lxml==4.9.3
 
