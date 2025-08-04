@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
 from decimal import Decimal
 from enum import Enum
-from pydantic import BaseModel, Field, validator, HttpUrl, EmailStr, constr, conint, confloat
+from pydantic import BaseModel, Field, field_validator, HttpUrl, EmailStr, constr, conint, confloat
 
 
 # Enums for controlled values
@@ -44,7 +44,7 @@ class BaseSchema(BaseModel):
     """Base schema with common configuration."""
     
     class Config:
-        orm_mode = True
+        from_attributes = True
         use_enum_values = True
         validate_assignment = True
         arbitrary_types_allowed = True
@@ -205,7 +205,7 @@ class TaskQueueResponse(TaskQueueBase):
 class MonitoringSubscriptionBase(BaseSchema):
     """Base monitoring subscription schema."""
     name: constr(min_length=1, max_length=255) = Field(..., description="Subscription name")
-    keywords: List[constr(min_length=1)] = Field(..., min_items=1, description="Keywords to monitor")
+    keywords: List[constr(min_length=1)] = Field(..., min_length=1, description="Keywords to monitor")
     webhook_url: HttpUrl = Field(..., description="Webhook URL for notifications")
 
 
@@ -217,7 +217,7 @@ class MonitoringSubscriptionCreate(MonitoringSubscriptionBase):
 class MonitoringSubscriptionUpdate(BaseSchema):
     """Schema for updating monitoring subscriptions."""
     name: Optional[constr(min_length=1, max_length=255)] = None
-    keywords: Optional[List[constr(min_length=1)]] = None
+    keywords: Optional[List[constr(min_length=1)]] = Field(None, min_length=1)
     webhook_url: Optional[HttpUrl] = None
     is_active: Optional[bool] = None
 
@@ -368,7 +368,8 @@ class ErrorResponse(BaseModel):
     """Standard error response."""
     error: Dict[str, str] = Field(..., description="Error information")
     
-    @validator('error')
+    @field_validator('error')
+    @classmethod
     def validate_error(cls, v):
         required_fields = {'type', 'message'}
         if not all(field in v for field in required_fields):

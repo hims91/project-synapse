@@ -26,6 +26,7 @@ This ensures seamless integration between tasks and provides a complete developm
 
 - [x] 2. Set up core database schema and models
 
+
   - [x] 2.1 Create PostgreSQL database schema with all core tables
 
 

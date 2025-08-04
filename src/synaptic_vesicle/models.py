@@ -13,7 +13,7 @@ from sqlalchemy import (
     JSON, ARRAY, Index, UniqueConstraint, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 
 Base = declarative_base()
