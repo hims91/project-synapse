@@ -4,7 +4,6 @@ Layer 2: Signal Network
 
 This module handles database connectivity, session management, and health checks.
 """
-import os
 import asyncio
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
@@ -18,6 +17,8 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy import text
 import structlog
 
+from ..shared.config import get_database_settings, DatabaseSettings
+
 logger = structlog.get_logger(__name__)
 
 
@@ -27,36 +28,23 @@ class DatabaseManager:
     Implements connection pooling, health checks, and retry logic.
     """
     
-    def __init__(self):
+    def __init__(self, db_settings: Optional[DatabaseSettings] = None):
+        self.db_settings = db_settings or get_database_settings()
         self.engine: Optional[AsyncEngine] = None
         self.session_factory: Optional[async_sessionmaker] = None
         self._is_connected = False
     
-    def get_database_url(self) -> str:
-        """Get database URL from environment variables."""
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            # Fallback to individual components
-            host = os.getenv("DB_HOST", "localhost")
-            port = os.getenv("DB_PORT", "5432")
-            database = os.getenv("DB_NAME", "synapse")
-            username = os.getenv("DB_USER", "synapse")
-            password = os.getenv("DB_PASSWORD", "synapse_dev_password")
-            database_url = f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}"
-        
-        return database_url
-    
     async def initialize(self) -> None:
         """Initialize database connection and session factory."""
         try:
-            database_url = self.get_database_url()
+            database_url = self.db_settings.get_database_url()
             
             # Create async engine with connection pooling
             self.engine = create_async_engine(
                 database_url,
-                echo=os.getenv("DB_ECHO", "false").lower() == "true",
-                pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
-                max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "30")),
+                echo=self.db_settings.db_echo,
+                pool_size=self.db_settings.db_pool_size,
+                max_overflow=self.db_settings.db_max_overflow,
                 pool_pre_ping=True,  # Validate connections before use
                 pool_recycle=3600,   # Recycle connections every hour
             )
