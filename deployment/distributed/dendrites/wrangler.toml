@@ -1,82 +1,21 @@
-# Cloudflare Workers configuration for Dendrites (Feed Pollers)
-# High-frequency RSS/Atom feed polling with priority-based scheduling
+# Cloudflare Workers configuration for Dendrites (Edge Cache)
+# Simple edge caching and request routing
 
 name = "synapse-dendrites"
 main = "src/index.js"
 compatibility_date = "2024-01-08"
 compatibility_flags = ["nodejs_compat"]
 
-# Worker settings
-[env.production]
-name = "synapse-dendrites"
-route = { pattern = "feeds.projectsynapse.com/*", zone_name = "projectsynapse.com" }
-
 # Environment variables
-[env.production.vars]
+[vars]
 ENVIRONMENT = "production"
 SYNAPSE_HUB_URL = "https://synapse-central-hub.onrender.com"
 LOG_LEVEL = "INFO"
+DENDRITES_API_KEY = "dendrites_7f3a9b2e5c8d1f4a6b9c2e5f8a1b4e7c"
 
-# Secrets (set via wrangler secret put)
-# SYNAPSE_API_KEY = "dendrites_api_key_from_hub"
-# HUB_WEBHOOK_SECRET = "webhook_secret_for_callbacks"
+# KV Namespace for caching
+[[kv_namespaces]]
+binding = "CACHE"
+id = "c7467f9d479f4b5e9eaf0c1dc8746a89"
 
-# KV Namespaces for caching
-[[env.production.kv_namespaces]]
-binding = "FEED_CACHE"
-id = "feed_cache_namespace_id"
-preview_id = "feed_cache_preview_id"
-
-[[env.production.kv_namespaces]]
-binding = "FEED_METADATA"
-id = "feed_metadata_namespace_id"
-preview_id = "feed_metadata_preview_id"
-
-[[env.production.kv_namespaces]]
-binding = "METRICS"
-id = "metrics_namespace_id"
-preview_id = "metrics_preview_id"
-
-# R2 Bucket for fallback storage
-[[env.production.r2_buckets]]
-binding = "FALLBACK_STORAGE"
-bucket_name = "synapse-fallback-storage"
-
-# Durable Objects for coordination
-[[env.production.durable_objects.bindings]]
-name = "FEED_COORDINATOR"
-class_name = "FeedCoordinator"
-
-# Cron triggers for scheduled polling
-[[env.production.triggers]]
-crons = [
-  "*/5 * * * *",   # Every 5 minutes - High priority feeds
-  "*/15 * * * *",  # Every 15 minutes - Normal priority feeds
-  "0 * * * *",     # Every hour - Low priority feeds
-  "0 0 * * *"      # Daily - Cleanup and maintenance
-]
-
-# Development environment
-[env.development]
-name = "synapse-dendrites-dev"
-
-[env.development.vars]
-ENVIRONMENT = "development"
-SYNAPSE_HUB_URL = "http://localhost:8000"
-LOG_LEVEL = "DEBUG"
-
-# Resource limits
-[limits]
-cpu_ms = 50  # 50ms CPU time per request (free tier)
-
-# Build configuration
-[build]
-command = "npm run build"
-cwd = "."
-watch_dir = "src"
-
-# Miniflare configuration for local development
-[miniflare]
-kv_persist = true
-r2_persist = true
-durable_objects_persist = true
+# Resource limits removed for free tier compatibility
