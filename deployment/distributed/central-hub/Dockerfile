@@ -18,8 +18,9 @@ COPY deployment/distributed/central-hub/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY src/ ./src/
-COPY .env.example .env
+COPY deployment/distributed/central-hub/simple_app.py ./app.py
+COPY deployment/distributed/central-hub/minimal_config.py ./minimal_config.py
+COPY deployment/distributed/central-hub/.env.production .env
 
 # Expose port
 EXPOSE 10000
@@ -29,4 +30,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:10000/health || exit 1
 
 # Run the application
-CMD ["python", "-m", "uvicorn", "src.central_cortex.app:app", "--host", "0.0.0.0", "--port", "10000"]
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000"]

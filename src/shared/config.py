@@ -79,6 +79,7 @@ class DatabaseSettings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "allow"
 
 
 class RedisSettings(BaseSettings):
@@ -91,6 +92,7 @@ class RedisSettings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "allow"
 
 
 class CloudflareSettings(BaseSettings):
