@@ -98,24 +98,60 @@ async def get_components():
         "central_hub": {
             "status": "operational",
             "version": settings.app_version,
-            "environment": settings.environment
+            "environment": settings.environment,
+            "url": "https://synapse-central-hub.onrender.com"
         },
         "dendrites": {
-            "status": "not_deployed",
-            "note": "Edge cache layer - deploy next"
+            "status": "operational",
+            "note": "Edge cache layer - deployed",
+            "url": "https://synapse-dendrites.thehimzack.workers.dev"
         },
         "neurons": {
-            "status": "not_deployed", 
-            "note": "Scraping workers - deploy after dendrites"
+            "status": "operational", 
+            "note": "Scraping workers - deployed",
+            "url": "https://synapse-neurons.onrender.com"
         },
         "sensory_neurons": {
-            "status": "not_deployed",
-            "note": "Learning scrapers - deploy after neurons"
+            "status": "ready_to_deploy",
+            "note": "Learning scrapers - GitHub Actions setup required",
+            "platform": "github_actions"
         },
         "spinal_cord": {
             "status": "not_deployed",
-            "note": "Fallback system - deploy last"
+            "note": "Fallback system - deploy last",
+            "platform": "vercel"
         }
+    }
+
+@app.post("/api/v1/callbacks/sensory")
+async def sensory_callback(request: dict):
+    """Receive callbacks from Sensory Neurons."""
+    return {
+        "status": "received",
+        "message": "Sensory Neurons callback processed",
+        "job_id": request.get("job_id"),
+        "component": "central_hub",
+        "timestamp": request.get("timestamp")
+    }
+
+@app.post("/api/v1/trigger/sensory")
+async def trigger_sensory_neurons(request: dict):
+    """Trigger Sensory Neurons via GitHub Actions (placeholder)."""
+    url = request.get("url")
+    priority = request.get("priority", "normal")
+    
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    
+    # In a full implementation, this would trigger GitHub Actions
+    # For now, return a placeholder response
+    return {
+        "status": "triggered",
+        "message": "Sensory Neurons job queued",
+        "url": url,
+        "priority": priority,
+        "note": "This is a placeholder - full GitHub Actions integration coming soon",
+        "estimated_completion": "2-5 minutes"
     }
 
 if __name__ == "__main__":
