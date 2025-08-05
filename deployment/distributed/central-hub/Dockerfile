@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY deployment/distributed/central-hub/requirements.txt ./requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --user -r requirements.txt
