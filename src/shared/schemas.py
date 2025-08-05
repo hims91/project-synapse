@@ -441,3 +441,45 @@ class ScrapeJobResponse(BaseModel):
     data: Optional[ArticleResponse] = Field(None, description="Scraped data (when completed)")
     created_at: datetime = Field(..., description="Job creation time")
     completed_at: Optional[datetime] = Field(None, description="Job completion time")
+
+# NLP Processing schemas
+class EntityExtraction(BaseModel):
+    """Named entity extraction result."""
+    text: str = Field(..., description="Entity text")
+    label: str = Field(..., description="Entity type (PERSON, ORG, etc.)")
+    start: int = Field(..., description="Start character position")
+    end: int = Field(..., description="End character position")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
+
+
+class SentimentAnalysis(BaseModel):
+    """Sentiment analysis result."""
+    score: float = Field(..., ge=-1.0, le=1.0, description="Sentiment score (-1 to 1)")
+    polarity: str = Field(..., description="Sentiment polarity (positive, negative, neutral)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
+
+
+class NLPAnalysis(BaseModel):
+    """Comprehensive NLP analysis result."""
+    sentiment: float = Field(..., ge=-1.0, le=1.0, description="Overall sentiment score")
+    entities: List[EntityExtraction] = Field(default_factory=list, description="Extracted entities")
+    categories: List[str] = Field(default_factory=list, description="Content categories")
+    significance: float = Field(..., ge=0.0, le=10.0, description="Content significance score")
+    summary: str = Field(default="", description="Extractive summary")
+    processing_tiers: List[str] = Field(default_factory=list, description="Successful processing tiers")
+    processing_time: float = Field(..., ge=0.0, description="Total processing time in seconds")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class NLPProcessingRequest(BaseModel):
+    """Request for NLP processing."""
+    text: str = Field(..., min_length=1, description="Text to process")
+    title: Optional[str] = Field(None, description="Optional title for context")
+    tiers: Optional[List[str]] = Field(None, description="Processing tiers to use")
+
+
+class NLPProcessingResponse(BaseModel):
+    """Response from NLP processing."""
+    analysis: NLPAnalysis = Field(..., description="NLP analysis results")
+    success: bool = Field(..., description="Processing success flag")
+    error_message: Optional[str] = Field(None, description="Error message if failed")

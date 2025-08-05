@@ -1,0 +1,48 @@
+name = "synapse-feed-poller"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[env.production]
+name = "synapse-feed-poller"
+route = { pattern = "feeds.synapse.ai/*", zone_name = "synapse.ai" }
+
+[env.staging]
+name = "synapse-feed-poller-staging"
+
+# KV Namespaces for feed data storage
+[[kv_namespaces]]
+binding = "FEED_CACHE"
+id = "feed_cache_namespace"
+preview_id = "feed_cache_preview"
+
+[[kv_namespaces]]
+binding = "FEED_METRICS"
+id = "feed_metrics_namespace"
+preview_id = "feed_metrics_preview"
+
+# Durable Objects for feed coordination
+[[durable_objects.bindings]]
+name = "FEED_COORDINATOR"
+class_name = "FeedCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["FeedCoordinator"]
+
+# Environment variables
+[vars]
+ENVIRONMENT = "production"
+MAX_CONCURRENT_POLLS = "10"
+DEFAULT_POLL_INTERVAL = "1800"  # 30 minutes in seconds
+BATCH_SIZE = "5"
+
+# Cron triggers for scheduled polling
+[[triggers.cron]]
+cron = "*/5 * * * *"  # Every 5 minutes for critical feeds
+[[triggers.cron]]
+cron = "*/15 * * * *"  # Every 15 minutes for high priority feeds
+[[triggers.cron]]
+cron = "*/30 * * * *"  # Every 30 minutes for normal feeds
+[[triggers.cron]]
+cron = "0 * * * *"    # Every hour for low priority feeds

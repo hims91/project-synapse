@@ -1,0 +1,546 @@
+# Project Synapse Learning Scrapers - GitHub Actions Workflow
+# Automated execution of learning scrapers with secure credential management
+
+name: Learning Scrapers
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      target_urls:
+        description: 'Comma-separated list of URLs to scrape'
+        required: false
+        default: ''
+      scraper_type:
+        description: 'Type of scraper to use'
+        required: true
+        default: 'playwright'
+        type: choice
+        options:
+          - playwright
+          - http
+          - both
+      learning_mode:
+        description: 'Enable learning mode'
+        required: true
+        default: true
+        type: boolean
+      use_proxy:
+        description: 'Use proxy network'
+        required: true
+        default: false
+        type: boolean
+      max_concurrent:
+        description: 'Maximum concurrent scrapers'
+        required: false
+        default: '3'
+      timeout_minutes:
+        description: 'Timeout in minutes'
+        required: false
+        default: '30'
+  
+  # Scheduled execution
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  
+  # Trigger from other workflows
+  workflow_call:
+    inputs:
+      target_urls:
+        description: 'URLs to scrape'
+        required: false
+        type: string
+      scraper_type:
+        description: 'Scraper type'
+        required: false
+        type: string
+        default: 'playwright'
+      learning_mode:
+        description: 'Learning mode'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  setup:
+    name: Setup Environment
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.setup-matrix.outputs.matrix }}
+      target_urls: ${{ steps.setup-urls.outputs.urls }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup URL matrix
+        id: setup-urls
+        run: |
+          if [ -n "${{ github.event.inputs.target_urls }}" ]; then
+            URLS="${{ github.event.inputs.target_urls }}"
+          else
+            # Default URLs for scheduled runs
+            URLS="https://example.com/news,https://httpbin.org/html,https://quotes.toscrape.com"
+          fi
+          
+          echo "urls=$URLS" >> $GITHUB_OUTPUT
+          echo "Target URLs: $URLS"
+      
+      - name: Setup scraper matrix
+        id: setup-matrix
+        run: |
+          SCRAPER_TYPE="${{ github.event.inputs.scraper_type || 'playwright' }}"
+          
+          if [ "$SCRAPER_TYPE" = "both" ]; then
+            MATRIX='["playwright", "http"]'
+          else
+            MATRIX='["'$SCRAPER_TYPE'"]'
+          fi
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Scraper matrix: $MATRIX"
+
+  learning-scraper:
+    name: Learning Scraper (${{ matrix.scraper_type }})
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix:
+        scraper_type: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 2
+    
+    timeout-minutes: ${{ fromJson(github.event.inputs.timeout_minutes || '30') }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Setup Node.js (for Playwright)
+        if: matrix.scraper_type == 'playwright'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxml2-dev \
+            libxslt-dev \
+            libjpeg-dev \
+            libpng-dev \
+            libffi-dev \
+            libssl-dev \
+            tor
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          
+          # Install additional dependencies for learning scrapers
+          pip install \
+            playwright \
+            scikit-learn \
+            numpy \
+            aiohttp-socks \
+            python-dateutil
+      
+      - name: Install Playwright browsers
+        if: matrix.scraper_type == 'playwright'
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+      
+      - name: Setup Tor (if proxy enabled)
+        if: github.event.inputs.use_proxy == 'true'
+        run: |
+          sudo systemctl start tor
+          sudo systemctl enable tor
+          
+          # Wait for Tor to start
+          sleep 10
+          
+          # Test Tor connection
+          curl --socks5 127.0.0.1:9050 http://httpbin.org/ip || echo "Tor not ready"
+      
+      - name: Create directories
+        run: |
+          mkdir -p logs screenshots models/recipe_learning results
+          chmod 755 logs screenshots models results
+      
+      - name: Setup environment variables
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "LOG_LEVEL=INFO" >> $GITHUB_ENV
+          echo "SCRAPER_TYPE=${{ matrix.scraper_type }}" >> $GITHUB_ENV
+          echo "LEARNING_MODE=${{ github.event.inputs.learning_mode || 'true' }}" >> $GITHUB_ENV
+          echo "USE_PROXY=${{ github.event.inputs.use_proxy || 'false' }}" >> $GITHUB_ENV
+          echo "MAX_CONCURRENT=${{ github.event.inputs.max_concurrent || '3' }}" >> $GITHUB_ENV
+          echo "GITHUB_ACTIONS=true" >> $GITHUB_ENV
+      
+      - name: Setup database (SQLite for Actions)
+        run: |
+          # Create SQLite database for testing
+          export DATABASE_URL="sqlite:///./test_synapse.db"
+          echo "DATABASE_URL=$DATABASE_URL" >> $GITHUB_ENV
+          
+          # Initialize database
+          python -c "
+          import asyncio
+          import sys
+          sys.path.insert(0, '.')
+          
+          from src.synaptic_vesicle.database import DatabaseManager
+          from src.synaptic_vesicle.models import Base
+          from sqlalchemy import create_engine
+          
+          # Create tables
+          engine = create_engine('sqlite:///./test_synapse.db')
+          Base.metadata.create_all(engine)
+          print('Database initialized')
+          "
+      
+      - name: Run learning scraper
+        id: scraper
+        run: |
+          python -c "
+          import asyncio
+          import sys
+          import os
+          import json
+          import logging
+          from datetime import datetime
+          from typing import List, Dict, Any
+          
+          # Setup logging
+          logging.basicConfig(
+              level=logging.INFO,
+              format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+              handlers=[
+                  logging.FileHandler('logs/scraper.log'),
+                  logging.StreamHandler()
+              ]
+          )
+          logger = logging.getLogger(__name__)
+          
+          sys.path.insert(0, '.')
+          
+          async def run_learning_scraper():
+              try:
+                  # Import components
+                  from src.sensory_neurons.playwright_scraper import PlaywrightScraper
+                  from src.neurons.http_scraper import HTTPScraper
+                  from src.sensory_neurons.recipe_learner import RecipeLearner
+                  from src.sensory_neurons.chameleon_network import ChameleonNetwork
+                  
+                  # Parse URLs
+                  urls_str = '${{ needs.setup.outputs.target_urls }}'
+                  urls = [url.strip() for url in urls_str.split(',') if url.strip()]
+                  
+                  if not urls:
+                      logger.error('No URLs provided')
+                      return
+                  
+                  logger.info(f'Starting learning scraper for {len(urls)} URLs')
+                  logger.info(f'Scraper type: {os.getenv(\"SCRAPER_TYPE\")}')
+                  logger.info(f'Learning mode: {os.getenv(\"LEARNING_MODE\")}')
+                  logger.info(f'Use proxy: {os.getenv(\"USE_PROXY\")}')
+                  
+                  # Initialize components
+                  recipe_learner = RecipeLearner()
+                  results = []
+                  
+                  # Setup proxy if enabled
+                  chameleon = None
+                  if os.getenv('USE_PROXY') == 'true':
+                      try:
+                          chameleon = ChameleonNetwork(tor_enabled=True)
+                          await chameleon.start()
+                          logger.info('Proxy network initialized')
+                      except Exception as e:
+                          logger.warning(f'Proxy setup failed: {e}')
+                          chameleon = None
+                  
+                  try:
+                      scraper_type = os.getenv('SCRAPER_TYPE', 'playwright')
+                      max_concurrent = int(os.getenv('MAX_CONCURRENT', '3'))
+                      
+                      if scraper_type == 'playwright':
+                          # Use Playwright scraper
+                          async with PlaywrightScraper(headless=True) as scraper:
+                              scrape_results = await scraper.scrape_multiple(
+                                  urls, 
+                                  use_recipe=True,
+                                  max_concurrent=max_concurrent,
+                                  take_screenshots=True
+                              )
+                              
+                              for url, article, metadata, error in scrape_results:
+                                  result = {
+                                      'url': url,
+                                      'success': article is not None,
+                                      'scraper_type': 'playwright',
+                                      'timestamp': datetime.utcnow().isoformat(),
+                                      'error': str(error) if error else None
+                                  }
+                                  
+                                  if article:
+                                      result.update({
+                                          'title': article.title,
+                                          'content_length': len(article.content or ''),
+                                          'author': article.author,
+                                          'domain': article.source_domain
+                                      })
+                                      
+                                      # Learn from successful scrape
+                                      if os.getenv('LEARNING_MODE') == 'true':
+                                          try:
+                                              await recipe_learner.learn_from_scrape(
+                                                  url=url,
+                                                  html_content=metadata.get('dom_analysis', {}) if metadata else {},
+                                                  extracted_data={
+                                                      'title': article.title,
+                                                      'content': article.content,
+                                                      'author': article.author
+                                                  },
+                                                  selectors_used={},
+                                                  success=True
+                                              )
+                                          except Exception as e:
+                                              logger.warning(f'Learning failed for {url}: {e}')
+                                  
+                                  results.append(result)
+                      
+                      elif scraper_type == 'http':
+                          # Use HTTP scraper
+                          http_scraper = HTTPScraper()
+                          
+                          try:
+                              scrape_results = await http_scraper.scrape_multiple(
+                                  urls,
+                                  use_recipe=True,
+                                  max_concurrent=max_concurrent
+                              )
+                              
+                              for url, article, error in scrape_results:
+                                  result = {
+                                      'url': url,
+                                      'success': article is not None,
+                                      'scraper_type': 'http',
+                                      'timestamp': datetime.utcnow().isoformat(),
+                                      'error': str(error) if error else None
+                                  }
+                                  
+                                  if article:
+                                      result.update({
+                                          'title': article.title,
+                                          'content_length': len(article.content or ''),
+                                          'author': article.author,
+                                          'domain': article.source_domain
+                                      })
+                                  
+                                  results.append(result)
+                          
+                          finally:
+                              await http_scraper.close()
+                      
+                      # Save results
+                      results_file = f'results/scraper_results_{scraper_type}.json'
+                      with open(results_file, 'w') as f:
+                          json.dump(results, f, indent=2)
+                      
+                      # Get learning stats
+                      if os.getenv('LEARNING_MODE') == 'true':
+                          learning_stats = await recipe_learner.get_learning_stats()
+                          
+                          stats_file = f'results/learning_stats_{scraper_type}.json'
+                          with open(stats_file, 'w') as f:
+                              json.dump(learning_stats, f, indent=2)
+                          
+                          # Save learned models
+                          await recipe_learner.save_models()
+                      
+                      # Summary
+                      successful = sum(1 for r in results if r['success'])
+                      logger.info(f'Scraping completed: {successful}/{len(results)} successful')
+                      
+                      # Set GitHub Actions output
+                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          f.write(f'success_count={successful}\\n')
+                          f.write(f'total_count={len(results)}\\n')
+                          f.write(f'success_rate={successful/len(results) if results else 0:.2f}\\n')
+                  
+                  finally:
+                      if chameleon:
+                          await chameleon.stop()
+              
+              except Exception as e:
+                  logger.error(f'Scraper execution failed: {e}')
+                  raise
+          
+          # Run the scraper
+          asyncio.run(run_learning_scraper())
+          "
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scraper-results-${{ matrix.scraper_type }}
+          path: |
+            results/
+            logs/
+            screenshots/
+            models/
+          retention-days: 30
+      
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: matrix.scraper_type == 'playwright'
+        with:
+          name: screenshots-${{ matrix.scraper_type }}
+          path: screenshots/
+          retention-days: 7
+      
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Learning Scraper Results (${{ matrix.scraper_type }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Success Count**: ${{ steps.scraper.outputs.success_count || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Count**: ${{ steps.scraper.outputs.total_count || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Success Rate**: ${{ steps.scraper.outputs.success_rate || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scraper Type**: ${{ matrix.scraper_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Learning Mode**: ${{ github.event.inputs.learning_mode || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Proxy Used**: ${{ github.event.inputs.use_proxy || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "results/scraper_results_${{ matrix.scraper_type }}.json" ]; then
+            echo "### Detailed Results" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            head -20 "results/scraper_results_${{ matrix.scraper_type }}.json" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  collect-results:
+    name: Collect Results
+    runs-on: ubuntu-latest
+    needs: [setup, learning-scraper]
+    if: always()
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      
+      - name: Combine results
+        run: |
+          mkdir -p combined_results
+          
+          # Combine JSON results
+          echo "[]" > combined_results/all_results.json
+          
+          for result_file in artifacts/*/results/scraper_results_*.json; do
+            if [ -f "$result_file" ]; then
+              echo "Processing $result_file"
+              jq -s '.[0] + .[1]' combined_results/all_results.json "$result_file" > temp.json
+              mv temp.json combined_results/all_results.json
+            fi
+          done
+          
+          # Create summary report
+          python3 -c "
+          import json
+          import sys
+          
+          try:
+              with open('combined_results/all_results.json', 'r') as f:
+                  results = json.load(f)
+              
+              total = len(results)
+              successful = sum(1 for r in results if r.get('success', False))
+              
+              summary = {
+                  'total_urls': total,
+                  'successful_scrapes': successful,
+                  'success_rate': successful / total if total > 0 else 0,
+                  'scraper_types': list(set(r.get('scraper_type', 'unknown') for r in results)),
+                  'domains': list(set(r.get('domain', 'unknown') for r in results if r.get('domain'))),
+                  'timestamp': '$(date -Iseconds)'
+              }
+              
+              with open('combined_results/summary.json', 'w') as f:
+                  json.dump(summary, f, indent=2)
+              
+              print(f'Summary: {successful}/{total} successful scrapes')
+              
+          except Exception as e:
+              print(f'Error creating summary: {e}')
+              sys.exit(1)
+          "
+      
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-results
+          path: combined_results/
+          retention-days: 90
+      
+      - name: Create final summary
+        run: |
+          echo "## 🕷️ Learning Scrapers Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "combined_results/summary.json" ]; then
+            TOTAL=$(jq -r '.total_urls' combined_results/summary.json)
+            SUCCESSFUL=$(jq -r '.successful_scrapes' combined_results/summary.json)
+            SUCCESS_RATE=$(jq -r '.success_rate' combined_results/summary.json)
+            SCRAPERS=$(jq -r '.scraper_types | join(", ")' combined_results/summary.json)
+            DOMAINS=$(jq -r '.domains | join(", ")' combined_results/summary.json)
+            
+            echo "### 📊 Results" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total URLs**: $TOTAL" >> $GITHUB_STEP_SUMMARY
+            echo "- **Successful Scrapes**: $SUCCESSFUL" >> $GITHUB_STEP_SUMMARY
+            echo "- **Success Rate**: $(printf '%.1f%%' $(echo "$SUCCESS_RATE * 100" | bc -l))" >> $GITHUB_STEP_SUMMARY
+            echo "- **Scraper Types**: $SCRAPERS" >> $GITHUB_STEP_SUMMARY
+            echo "- **Domains**: $DOMAINS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "### 🔗 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- Combined results and logs are available in the artifacts section" >> $GITHUB_STEP_SUMMARY
+          echo "- Screenshots (if taken) are available for 7 days" >> $GITHUB_STEP_SUMMARY
+          echo "- Learning models are saved for future use" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### ⚙️ Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target URLs**: ${{ needs.setup.outputs.target_urls }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Learning Mode**: ${{ github.event.inputs.learning_mode || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Proxy Network**: ${{ github.event.inputs.use_proxy || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Concurrent**: ${{ github.event.inputs.max_concurrent || '3' }}" >> $GITHUB_STEP_SUMMARY
+
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [collect-results]
+    if: always() && (github.event_name == 'schedule' || github.event.inputs.notify == 'true')
+    
+    steps:
+      - name: Send notification
+        run: |
+          echo "Notification step - implement webhook or email notification here"
+          echo "This could send results to Slack, Discord, email, etc."

@@ -1,0 +1,14 @@
+{
+  "name": "synapse-dendrites",
+  "version": "1.0.0",
+  "description": "Project Synapse - Dendrites (Feed Poller)",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production"
+  },
+  "keywords": ["synapse", "rss", "feeds", "cloudflare", "worker"],
+  "author": "Project Synapse",
+  "license": "MIT"
+}

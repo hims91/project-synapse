@@ -1,0 +1,46 @@
+name = "synapse-task-dispatcher"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[env.production]
+name = "synapse-task-dispatcher"
+vars = { ENVIRONMENT = "production" }
+
+[env.staging]
+name = "synapse-task-dispatcher-staging"
+vars = { ENVIRONMENT = "staging" }
+
+[env.development]
+name = "synapse-task-dispatcher-dev"
+vars = { ENVIRONMENT = "development" }
+
+# Environment variables (set via wrangler secret put)
+# SYNAPSE_API_URL - URL of the main Synapse API
+# SYNAPSE_API_KEY - API key for authentication
+# WEBHOOK_SECRET - Secret for webhook validation
+# VERCEL_FALLBACK_URL - Vercel Edge Function fallback URL
+
+# KV namespace for task tracking
+[[kv_namespaces]]
+binding = "TASK_STORE"
+id = "task_store_namespace_id"
+preview_id = "task_store_preview_id"
+
+# Durable Objects for task coordination
+[[durable_objects.bindings]]
+name = "TASK_COORDINATOR"
+class_name = "TaskCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TaskCoordinator"]
+
+# Cron triggers for periodic tasks
+[[triggers]]
+crons = ["*/5 * * * *"]  # Every 5 minutes
+
+# Custom domains (configure as needed)
+# routes = [
+#   { pattern = "tasks.synapse.example.com/*", zone_name = "example.com" }
+# ]

@@ -1,0 +1,136 @@
+# Netlify configuration for Project Synapse Frontend Dashboard
+# React-based dashboard with real-time updates and API integration
+
+[build]
+  base = "frontend/"
+  publish = "build/"
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "18"
+  NPM_VERSION = "9"
+  REACT_APP_API_URL = "https://synapse-central-hub.onrender.com"
+  REACT_APP_WS_URL = "wss://synapse-central-hub.onrender.com/ws"
+  REACT_APP_ENVIRONMENT = "production"
+  GENERATE_SOURCEMAP = "false"
+
+# Redirect rules
+[[redirects]]
+  from = "/api/*"
+  to = "https://synapse-central-hub.onrender.com/v1/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/ws"
+  to = "https://synapse-central-hub.onrender.com/ws"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Headers for security and performance
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"
+
+# Edge functions for enhanced functionality
+[[edge_functions]]
+  function = "auth-check"
+  path = "/dashboard/*"
+
+[[edge_functions]]
+  function = "api-proxy"
+  path = "/api/*"
+
+# Environment-specific settings
+[context.production]
+  [context.production.environment]
+    REACT_APP_API_URL = "https://synapse-central-hub.onrender.com"
+    REACT_APP_WS_URL = "wss://synapse-central-hub.onrender.com/ws"
+    REACT_APP_SENTRY_DSN = "your_sentry_dsn"
+    REACT_APP_ANALYTICS_ID = "your_analytics_id"
+
+[context.deploy-preview]
+  [context.deploy-preview.environment]
+    REACT_APP_API_URL = "https://synapse-central-hub-staging.onrender.com"
+    REACT_APP_WS_URL = "wss://synapse-central-hub-staging.onrender.com/ws"
+
+[context.branch-deploy]
+  [context.branch-deploy.environment]
+    REACT_APP_API_URL = "https://synapse-central-hub-dev.onrender.com"
+    REACT_APP_WS_URL = "wss://synapse-central-hub-dev.onrender.com/ws"
+
+# Form handling (for contact/feedback forms)
+[forms]
+  [forms.feedback]
+    action = "/api/feedback"
+    method = "POST"
+
+# Functions (for serverless API endpoints)
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Plugin configuration
+[[plugins]]
+  package = "@netlify/plugin-lighthouse"
+  
+  [plugins.inputs.thresholds]
+    performance = 0.9
+    accessibility = 0.9
+    best-practices = 0.9
+    seo = 0.9
+
+[[plugins]]
+  package = "netlify-plugin-checklinks"
+  
+  [plugins.inputs]
+    skipPatterns = ["/api/*"]
+
+# Split testing
+[split_testing]
+  [split_testing.dashboard_redesign]
+    path = "/dashboard/*"
+    branches = ["main", "dashboard-v2"]
+    split = [50, 50]
+
+# Analytics
+[analytics]
+  provider = "google"
+
+# Security
+[security]
+  [security.headers]
+    for = "/*"
+    [security.headers.values]
+      Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://synapse-central-hub.onrender.com wss://synapse-central-hub.onrender.com; font-src 'self' https://fonts.gstatic.com"
+      Strict-Transport-Security = "max-age=31536000; includeSubDomains"

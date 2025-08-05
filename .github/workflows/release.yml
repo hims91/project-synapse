@@ -1,0 +1,455 @@
+# Project Synapse - Release Pipeline
+# Automated release creation and deployment
+
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Validate release
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
+          else
+            VERSION="${{ github.ref_name }}"
+            # Check if it's a pre-release (contains alpha, beta, rc)
+            if [[ "$VERSION" =~ (alpha|beta|rc) ]]; then
+              IS_PRERELEASE="true"
+            else
+              IS_PRERELEASE="false"
+            fi
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          
+          echo "Release version: $VERSION"
+          echo "Is pre-release: $IS_PRERELEASE"
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v1.2.3 or v1.2.3-alpha1"
+            exit 1
+          fi
+          echo "✅ Version format is valid"
+
+      - name: Check if tag exists
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if git tag -l | grep -q "^$VERSION$"; then
+            echo "❌ Tag $VERSION already exists"
+            exit 1
+          fi
+          echo "✅ Tag $VERSION is available"
+
+  # Run comprehensive tests
+  test:
+    name: Comprehensive Testing
+    runs-on: ubuntu-latest
+    needs: validate
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: synapse_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Set up test environment
+        run: |
+          cp .env.example .env
+          echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/synapse_test" >> .env
+          echo "REDIS_URL=redis://localhost:6379/1" >> .env
+          echo "ENVIRONMENT=test" >> .env
+
+      - name: Run database migrations
+        run: python -m alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/synapse_test
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml --cov-report=html \
+                 --junitxml=pytest-report.xml --cov-fail-under=80
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/synapse_test
+          REDIS_URL: redis://localhost:6379/1
+          ENVIRONMENT: test
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results
+          path: |
+            htmlcov/
+            coverage.xml
+            pytest-report.xml
+
+  # Build release artifacts
+  build:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      wheel_path: ${{ steps.build-wheel.outputs.wheel_path }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build Python wheel
+        id: build-wheel
+        run: |
+          python -m build
+          WHEEL_PATH=$(ls dist/*.whl)
+          echo "wheel_path=$WHEEL_PATH" >> $GITHUB_OUTPUT
+          echo "Built wheel: $WHEEL_PATH"
+
+      - name: Verify wheel
+        run: |
+          twine check dist/*
+          echo "✅ Wheel verification passed"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/project-synapse
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.validate.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.validate.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.validate.outputs.version }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          target: production
+          build-args: |
+            BUILD_VERSION=${{ needs.validate.outputs.version }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-artifacts
+          path: |
+            dist/
+            Dockerfile
+
+  # Generate changelog
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | head -n 2 | tail -n 1 || echo "")
+          CURRENT_VERSION="${{ needs.validate.outputs.version }}"
+          
+          echo "Generating changelog from $PREVIOUS_TAG to $CURRENT_VERSION"
+          
+          # Generate changelog
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)")
+          fi
+          
+          # Create formatted changelog
+          cat > CHANGELOG_TEMP.md << EOF
+          ## What's Changed
+          
+          $CHANGELOG
+          
+          ## Docker Image
+          
+          \`\`\`bash
+          docker pull ${{ steps.login-ecr.outputs.registry }}/project-synapse:$CURRENT_VERSION
+          \`\`\`
+          
+          ## Installation
+          
+          \`\`\`bash
+          pip install project-synapse==$CURRENT_VERSION
+          \`\`\`
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREVIOUS_TAG...$CURRENT_VERSION
+          EOF
+          
+          # Set output
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat CHANGELOG_TEMP.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  # Create GitHub release
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, test, build, changelog]
+    outputs:
+      release_id: ${{ steps.create-release.outputs.id }}
+      release_url: ${{ steps.create-release.outputs.html_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-artifacts
+          path: ./artifacts
+
+      - name: Create GitHub Release
+        id: create-release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.validate.outputs.version }}
+          release_name: Release ${{ needs.validate.outputs.version }}
+          body: ${{ needs.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ needs.validate.outputs.is_prerelease }}
+
+      - name: Upload wheel to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create-release.outputs.upload_url }}
+          asset_path: ./artifacts/${{ needs.build.outputs.wheel_path }}
+          asset_name: ${{ needs.build.outputs.wheel_path }}
+          asset_content_type: application/zip
+
+  # Deploy to production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [validate, release]
+    if: needs.validate.outputs.is_prerelease == 'false'
+    environment:
+      name: production
+      url: https://api.projectsynapse.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Deploy to production
+        run: |
+          cd deployment/infrastructure/terraform
+          terraform init
+          terraform workspace select production
+          terraform plan -var-file="environments/production.tfvars" \
+                         -var="app_image=${{ needs.build.outputs.image_tag }}" \
+                         -out=tfplan
+          terraform apply tfplan
+        env:
+          TF_VAR_database_password: ${{ secrets.PRODUCTION_DATABASE_PASSWORD }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_vercel_api_token: ${{ secrets.VERCEL_API_TOKEN }}
+          TF_VAR_ssl_certificate_arn: ${{ secrets.SSL_CERTIFICATE_ARN }}
+
+      - name: Run production health check
+        run: |
+          ALB_DNS=$(cd deployment/infrastructure/terraform && terraform output -raw alb_dns_name)
+          for i in {1..30}; do
+            if curl -f "https://$ALB_DNS/health"; then
+              echo "✅ Production deployment health check passed"
+              break
+            fi
+            echo "Waiting for production deployment... ($i/30)"
+            sleep 30
+          done
+
+  # Publish to package registry
+  publish:
+    name: Publish Package
+    runs-on: ubuntu-latest
+    needs: [validate, test, build, release]
+    if: needs.validate.outputs.is_prerelease == 'false'
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-artifacts
+          path: ./artifacts
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          twine upload ./artifacts/dist/*
+
+  # Post-release tasks
+  post-release:
+    name: Post-release Tasks
+    runs-on: ubuntu-latest
+    needs: [validate, release, deploy-production, publish]
+    if: always() && needs.release.result == 'success'
+    steps:
+      - name: Update documentation
+        run: |
+          echo "Updating documentation for release ${{ needs.validate.outputs.version }}"
+          # This would typically update documentation sites, API docs, etc.
+
+      - name: Notify team
+        run: |
+          echo "🎉 Release ${{ needs.validate.outputs.version }} completed successfully!"
+          echo "Release URL: ${{ needs.release.outputs.release_url }}"
+          # Send notifications to Slack, email, etc.
+
+      - name: Update monitoring
+        run: |
+          echo "Updating monitoring dashboards for new release"
+          # Update Grafana dashboards, alerts, etc.
+
+      - name: Create next milestone
+        run: |
+          echo "Creating next development milestone"
+          # Create next milestone in project management tools
+
+  # Rollback on failure
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [validate, release, deploy-production]
+    if: failure() && needs.deploy-production.result == 'failure'
+    steps:
+      - name: Rollback production deployment
+        run: |
+          echo "🔄 Rolling back failed production deployment"
+          # Implement rollback logic
+
+      - name: Delete failed release
+        if: needs.release.result == 'success'
+        run: |
+          echo "Deleting failed release ${{ needs.validate.outputs.version }}"
+          # Delete the GitHub release if deployment failed

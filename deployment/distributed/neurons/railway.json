@@ -1,0 +1,68 @@
+{
+  "name": "synapse-neurons",
+  "description": "Project Synapse - Lightweight Scrapers (Neurons)",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "numReplicas": 2,
+    "sleepApplication": false,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  },
+  "environment": {
+    "ENVIRONMENT": "production",
+    "LOG_LEVEL": "INFO",
+    "COMPONENT_TYPE": "neurons",
+    "SCRAPER_CONCURRENCY": "5",
+    "SCRAPER_TIMEOUT": "30",
+    "CACHE_TTL": "3600",
+    "RETRY_ATTEMPTS": "3",
+    "RETRY_DELAY": "5"
+  },
+  "secrets": [
+    "SYNAPSE_HUB_URL",
+    "SYNAPSE_API_KEY",
+    "HUB_WEBHOOK_SECRET"
+  ],
+  "healthcheck": {
+    "path": "/health",
+    "intervalSeconds": 30,
+    "timeoutSeconds": 10
+  },
+  "resources": {
+    "memory": "512Mi",
+    "cpu": "0.5"
+  },
+  "scaling": {
+    "minReplicas": 1,
+    "maxReplicas": 5,
+    "targetCPUUtilization": 70,
+    "targetMemoryUtilization": 80
+  },
+  "networking": {
+    "serviceDomain": "synapse-neurons.railway.app"
+  },
+  "volumes": [
+    {
+      "name": "scraper-cache",
+      "mountPath": "/app/cache",
+      "size": "1Gi"
+    }
+  ],
+  "monitoring": {
+    "enabled": true,
+    "metrics": [
+      "cpu_usage",
+      "memory_usage",
+      "request_count",
+      "response_time"
+    ]
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "retention": "7d"
+  }
+}

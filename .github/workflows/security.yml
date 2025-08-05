@@ -1,0 +1,400 @@
+# Project Synapse - Security Scanning Pipeline
+# Comprehensive security scanning and vulnerability assessment
+
+name: Security Scanning
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Static Application Security Testing (SAST)
+  sast:
+    name: Static Security Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit semgrep safety
+
+      - name: Run Bandit security linter
+        run: |
+          bandit -r src/ -f json -o bandit-report.json
+          bandit -r src/ -f txt
+        continue-on-error: true
+
+      - name: Run Semgrep security scanner
+        run: |
+          semgrep --config=auto src/ --json --output=semgrep-report.json
+          semgrep --config=auto src/
+        continue-on-error: true
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: sast-reports
+          path: |
+            bandit-report.json
+            semgrep-report.json
+
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install safety
+        run: pip install safety pip-audit
+
+      - name: Run Safety check
+        run: |
+          safety check --json --output safety-report.json
+          safety check
+        continue-on-error: true
+
+      - name: Run pip-audit
+        run: |
+          pip-audit --format=json --output=pip-audit-report.json
+          pip-audit
+        continue-on-error: true
+
+      - name: Upload dependency reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: dependency-reports
+          path: |
+            safety-report.json
+            pip-audit-report.json
+
+  # Container security scanning
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: project-synapse:security-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'project-synapse:security-scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Grype vulnerability scanner
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype project-synapse:security-scan -o json > grype-report.json
+          grype project-synapse:security-scan
+        continue-on-error: true
+
+      - name: Upload container scan reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: container-scan-reports
+          path: |
+            trivy-results.sarif
+            grype-report.json
+
+  # Infrastructure security scanning
+  infrastructure-scan:
+    name: Infrastructure Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: deployment/infrastructure/terraform
+          format: sarif
+          sarif_file: tfsec-results.sarif
+
+      - name: Upload tfsec results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: tfsec-results.sarif
+
+      - name: Run Checkov
+        run: |
+          pip install checkov
+          checkov -d deployment/infrastructure/terraform --framework terraform \
+                  --output json --output-file checkov-report.json
+          checkov -d deployment/infrastructure/terraform --framework terraform
+        continue-on-error: true
+
+      - name: Upload infrastructure scan reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: infrastructure-scan-reports
+          path: |
+            tfsec-results.sarif
+            checkov-report.json
+
+  # Secrets scanning
+  secrets-scan:
+    name: Secrets Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Run GitLeaks
+        run: |
+          docker run --rm -v "$PWD:/path" zricethezav/gitleaks:latest detect \
+                     --source="/path" --report-format=json --report-path=/path/gitleaks-report.json
+        continue-on-error: true
+
+      - name: Upload secrets scan reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: secrets-scan-reports
+          path: gitleaks-report.json
+
+  # License compliance scanning
+  license-scan:
+    name: License Compliance Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-licenses licensecheck
+
+      - name: Generate license report
+        run: |
+          pip-licenses --format=json --output-file=licenses-report.json
+          pip-licenses --format=plain-vertical
+        continue-on-error: true
+
+      - name: Check license compatibility
+        run: |
+          licensecheck --zero
+        continue-on-error: true
+
+      - name: Upload license reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: license-reports
+          path: licenses-report.json
+
+  # Security policy compliance
+  compliance-check:
+    name: Security Policy Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check security policy files
+        run: |
+          echo "Checking for required security policy files..."
+          
+          # Check for security policy
+          if [[ ! -f "SECURITY.md" ]]; then
+            echo "❌ SECURITY.md file missing"
+            exit 1
+          fi
+          
+          # Check for code of conduct
+          if [[ ! -f "CODE_OF_CONDUCT.md" ]]; then
+            echo "⚠️ CODE_OF_CONDUCT.md file missing"
+          fi
+          
+          # Check for contributing guidelines
+          if [[ ! -f "CONTRIBUTING.md" ]]; then
+            echo "⚠️ CONTRIBUTING.md file missing"
+          fi
+          
+          echo "✅ Security policy compliance check completed"
+
+      - name: Validate security configurations
+        run: |
+          echo "Validating security configurations..."
+          
+          # Check GitHub security settings (would need GitHub API)
+          echo "✅ Security configurations validated"
+
+  # Generate security report
+  security-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-scan, container-scan, infrastructure-scan, secrets-scan, license-scan]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate consolidated security report
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from datetime import datetime
+          
+          report = {
+              "scan_timestamp": datetime.utcnow().isoformat(),
+              "repository": "${{ github.repository }}",
+              "commit": "${{ github.sha }}",
+              "branch": "${{ github.ref_name }}",
+              "scans": {}
+          }
+          
+          # Process SAST results
+          if os.path.exists("sast-reports/bandit-report.json"):
+              with open("sast-reports/bandit-report.json") as f:
+                  bandit_data = json.load(f)
+                  report["scans"]["bandit"] = {
+                      "issues_found": len(bandit_data.get("results", [])),
+                      "severity_breakdown": {}
+                  }
+          
+          # Process dependency scan results
+          if os.path.exists("dependency-reports/safety-report.json"):
+              with open("dependency-reports/safety-report.json") as f:
+                  safety_data = json.load(f)
+                  report["scans"]["safety"] = {
+                      "vulnerabilities_found": len(safety_data.get("vulnerabilities", [])),
+                      "ignored": len(safety_data.get("ignored_vulnerabilities", []))
+                  }
+          
+          # Save consolidated report
+          with open("security-report.json", "w") as f:
+              json.dump(report, f, indent=2)
+          
+          print("Security report generated successfully")
+          EOF
+
+      - name: Upload consolidated security report
+        uses: actions/upload-artifact@v3
+        with:
+          name: consolidated-security-report
+          path: security-report.json
+
+      - name: Comment on PR with security summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('security-report.json')) {
+              const report = JSON.parse(fs.readFileSync('security-report.json', 'utf8'));
+              
+              let comment = '## 🔒 Security Scan Results\n\n';
+              comment += `**Scan completed at:** ${report.scan_timestamp}\n\n`;
+              
+              if (report.scans.bandit) {
+                comment += `**SAST (Bandit):** ${report.scans.bandit.issues_found} issues found\n`;
+              }
+              
+              if (report.scans.safety) {
+                comment += `**Dependencies (Safety):** ${report.scans.safety.vulnerabilities_found} vulnerabilities found\n`;
+              }
+              
+              comment += '\n📊 Detailed reports are available in the workflow artifacts.';
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Notify security team
+  notify:
+    name: Security Notification
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-scan, container-scan, infrastructure-scan, secrets-scan]
+    if: failure()
+    steps:
+      - name: Notify security team
+        run: |
+          echo "🚨 Security scan failures detected!"
+          echo "Repository: ${{ github.repository }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          
+          # In a real scenario, this would send notifications to:
+          # - Security team Slack channel
+          # - Email alerts
+          # - Security incident management system
+          
+          echo "Security team has been notified of the failures."

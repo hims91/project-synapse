@@ -1,0 +1,104 @@
+{
+  "name": "synapse-spinal-cord",
+  "version": 2,
+  "description": "Project Synapse - Fallback System (Spinal Cord)",
+  "regions": ["iad1", "sfo1", "fra1"],
+  "env": {
+    "ENVIRONMENT": "production",
+    "LOG_LEVEL": "INFO",
+    "COMPONENT_TYPE": "spinal_cord",
+    "FALLBACK_CHECK_INTERVAL": "30",
+    "RECOVERY_BATCH_SIZE": "50",
+    "TASK_RETENTION_DAYS": "7"
+  },
+  "build": {
+    "env": {
+      "NODE_ENV": "production"
+    }
+  },
+  "functions": {
+    "api/fallback/store.js": {
+      "maxDuration": 30
+    },
+    "api/fallback/recover.js": {
+      "maxDuration": 60
+    },
+    "api/health.js": {
+      "maxDuration": 10
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/fallback/store",
+      "dest": "/api/fallback/store.js",
+      "methods": ["POST"]
+    },
+    {
+      "src": "/api/fallback/recover",
+      "dest": "/api/fallback/recover.js",
+      "methods": ["POST"]
+    },
+    {
+      "src": "/api/fallback/status",
+      "dest": "/api/fallback/status.js",
+      "methods": ["GET"]
+    },
+    {
+      "src": "/api/health",
+      "dest": "/api/health.js",
+      "methods": ["GET"]
+    },
+    {
+      "src": "/webhook/database-recovery",
+      "dest": "/api/webhook/database-recovery.js",
+      "methods": ["POST"]
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Authorization, Content-Type"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/api/health"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/health-check",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 2 * * *"
+    }
+  ]
+}

@@ -1,0 +1,357 @@
+# Project Synapse - Continuous Deployment Pipeline
+# Automated deployment to staging and production environments
+
+name: CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_deploy:
+        description: 'Force deployment without additional checks'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  # Determine deployment environment
+  setup:
+    name: Setup Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.determine-env.outputs.environment }}
+      should_deploy: ${{ steps.determine-env.outputs.should_deploy }}
+      is_production: ${{ steps.determine-env.outputs.is_production }}
+    steps:
+      - name: Determine environment
+        id: determine-env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "${{ steps.determine-env.outputs.environment }}" == "production" ]]; then
+            echo "is_production=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_production=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Pre-deployment checks
+  pre-deployment:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_deploy == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run critical tests
+        run: |
+          pytest tests/test_critical.py -v
+        continue-on-error: false
+
+      - name: Check deployment readiness
+        run: |
+          python deployment/scripts/check-readiness.py --environment ${{ needs.setup.outputs.environment }}
+        continue-on-error: false
+
+  # Build and push Docker image
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: [setup, pre-deployment]
+    if: needs.setup.outputs.should_deploy == 'true'
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/project-synapse
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.setup.outputs.environment }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          target: production
+
+      - name: Sign container image
+        run: |
+          echo "Container image signing would happen here"
+          # cosign sign --key env://COSIGN_PRIVATE_KEY ${{ steps.meta.outputs.tags }}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+
+  # Deploy to staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    if: needs.setup.outputs.environment == 'staging'
+    environment:
+      name: staging
+      url: https://staging.projectsynapse.dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Deploy infrastructure
+        run: |
+          cd deployment/infrastructure/terraform
+          terraform init
+          terraform workspace select staging || terraform workspace new staging
+          terraform plan -var-file="environments/staging.tfvars" -var="app_image=${{ needs.build.outputs.image_tag }}" -out=tfplan
+          terraform apply tfplan
+        env:
+          TF_VAR_database_password: ${{ secrets.STAGING_DATABASE_PASSWORD }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_vercel_api_token: ${{ secrets.VERCEL_API_TOKEN }}
+
+      - name: Run database migrations
+        run: |
+          # Get database endpoint from Terraform output
+          DB_ENDPOINT=$(cd deployment/infrastructure/terraform && terraform output -raw database_endpoint)
+          # Run migrations (this would typically use a secure connection)
+          echo "Database migrations would run here against $DB_ENDPOINT"
+
+      - name: Health check
+        run: |
+          # Get ALB DNS name from Terraform output
+          ALB_DNS=$(cd deployment/infrastructure/terraform && terraform output -raw alb_dns_name)
+          # Wait for deployment to be ready
+          for i in {1..30}; do
+            if curl -f "http://$ALB_DNS/health"; then
+              echo "Health check passed"
+              break
+            fi
+            echo "Waiting for deployment... ($i/30)"
+            sleep 30
+          done
+
+      - name: Run smoke tests
+        run: |
+          ALB_DNS=$(cd deployment/infrastructure/terraform && terraform output -raw alb_dns_name)
+          python tests/smoke/test_staging.py --base-url "http://$ALB_DNS"
+
+  # Deploy to production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    if: needs.setup.outputs.environment == 'production'
+    environment:
+      name: production
+      url: https://api.projectsynapse.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Production deployment approval
+        if: needs.setup.outputs.is_production == 'true' && github.event.inputs.force_deploy != 'true'
+        run: |
+          echo "🚨 PRODUCTION DEPLOYMENT 🚨"
+          echo "This deployment will affect the production environment."
+          echo "Please ensure all checks have passed and you have approval."
+          # In a real scenario, this would wait for manual approval
+
+      - name: Blue-Green deployment preparation
+        run: |
+          echo "Preparing blue-green deployment for production"
+          # This would typically involve creating a new target group
+          # and gradually shifting traffic
+
+      - name: Deploy infrastructure
+        run: |
+          cd deployment/infrastructure/terraform
+          terraform init
+          terraform workspace select production || terraform workspace new production
+          terraform plan -var-file="environments/production.tfvars" -var="app_image=${{ needs.build.outputs.image_tag }}" -out=tfplan
+          terraform apply tfplan
+        env:
+          TF_VAR_database_password: ${{ secrets.PRODUCTION_DATABASE_PASSWORD }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_vercel_api_token: ${{ secrets.VERCEL_API_TOKEN }}
+          TF_VAR_ssl_certificate_arn: ${{ secrets.SSL_CERTIFICATE_ARN }}
+
+      - name: Run database migrations
+        run: |
+          DB_ENDPOINT=$(cd deployment/infrastructure/terraform && terraform output -raw database_endpoint)
+          echo "Production database migrations would run here against $DB_ENDPOINT"
+          # This would typically use a more secure method for production
+
+      - name: Gradual traffic shift
+        run: |
+          echo "Starting gradual traffic shift to new deployment"
+          # This would implement canary deployment or blue-green switching
+          # For example, using AWS ALB weighted target groups
+
+      - name: Health check and monitoring
+        run: |
+          ALB_DNS=$(cd deployment/infrastructure/terraform && terraform output -raw alb_dns_name)
+          # Extended health checks for production
+          for i in {1..60}; do
+            if curl -f "https://$ALB_DNS/health"; then
+              echo "Health check passed"
+              break
+            fi
+            echo "Waiting for production deployment... ($i/60)"
+            sleep 30
+          done
+
+      - name: Run production smoke tests
+        run: |
+          ALB_DNS=$(cd deployment/infrastructure/terraform && terraform output -raw alb_dns_name)
+          python tests/smoke/test_production.py --base-url "https://$ALB_DNS"
+
+      - name: Complete traffic shift
+        run: |
+          echo "Completing traffic shift to new deployment"
+          # Complete the blue-green deployment
+
+  # Post-deployment tasks
+  post-deployment:
+    name: Post-deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-staging, deploy-production]
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    steps:
+      - name: Update deployment status
+        run: |
+          echo "Deployment completed successfully"
+          echo "Environment: ${{ needs.setup.outputs.environment }}"
+          echo "Image: ${{ needs.build.outputs.image_tag }}"
+
+      - name: Notify team
+        run: |
+          echo "Sending deployment notification"
+          # This would typically send notifications to Slack, email, etc.
+
+      - name: Update monitoring dashboards
+        run: |
+          echo "Updating monitoring dashboards with new deployment info"
+          # This would update Grafana dashboards, etc.
+
+      - name: Create deployment record
+        run: |
+          echo "Creating deployment record for audit trail"
+          # This would create a record in a deployment tracking system
+
+  # Rollback on failure
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-staging, deploy-production]
+    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Rollback deployment
+        run: |
+          echo "🔄 Rolling back failed deployment"
+          ./deployment/scripts/rollback.sh -e ${{ needs.setup.outputs.environment }} -f
+
+      - name: Notify failure
+        run: |
+          echo "❌ Deployment failed and was rolled back"
+          echo "Environment: ${{ needs.setup.outputs.environment }}"
+          # Send failure notifications
