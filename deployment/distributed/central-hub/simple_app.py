@@ -154,6 +154,107 @@ async def trigger_sensory_neurons(request: dict):
         "estimated_completion": "2-5 minutes"
     }
 
+@app.get("/api/v1/test/system")
+async def test_system_integration():
+    """Comprehensive system integration test."""
+    import httpx
+    import asyncio
+    from datetime import datetime
+    
+    test_results = {
+        "test_id": f"system-test-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        "timestamp": datetime.now().isoformat(),
+        "components": {},
+        "integration_tests": {},
+        "overall_status": "testing"
+    }
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Test 1: Dendrites Health
+        try:
+            response = await client.get("https://synapse-dendrites.thehimzack.workers.dev/health")
+            test_results["components"]["dendrites"] = {
+                "status": "healthy" if response.status_code == 200 else "unhealthy",
+                "response_time": response.elapsed.total_seconds() if hasattr(response, 'elapsed') else 0,
+                "data": response.json() if response.status_code == 200 else None
+            }
+        except Exception as e:
+            test_results["components"]["dendrites"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Test 2: Neurons Health
+        try:
+            response = await client.get("https://synapse-neurons.onrender.com/health")
+            test_results["components"]["neurons"] = {
+                "status": "healthy" if response.status_code == 200 else "unhealthy",
+                "response_time": response.elapsed.total_seconds() if hasattr(response, 'elapsed') else 0,
+                "data": response.json() if response.status_code == 200 else None
+            }
+        except Exception as e:
+            test_results["components"]["neurons"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Test 3: Dendrites Proxy (Edge Cache)
+        try:
+            response = await client.get("https://synapse-dendrites.thehimzack.workers.dev/proxy?path=/health")
+            test_results["integration_tests"]["dendrites_proxy"] = {
+                "status": "working" if response.status_code == 200 else "failed",
+                "cache_header": response.headers.get("X-Cache", "unknown"),
+                "data": response.json() if response.status_code == 200 else None
+            }
+        except Exception as e:
+            test_results["integration_tests"]["dendrites_proxy"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Test 4: Neurons Scraping Test
+        try:
+            test_job = {
+                "job_id": f"integration-test-{datetime.now().strftime('%H%M%S')}",
+                "url": "https://httpbin.org/html",
+                "options": {"extract_text": True, "extract_title": True}
+            }
+            response = await client.post("https://synapse-neurons.onrender.com/scrape", json=test_job)
+            test_results["integration_tests"]["neurons_scraping"] = {
+                "status": "working" if response.status_code == 200 else "failed",
+                "job_accepted": response.status_code == 200,
+                "data": response.json() if response.status_code == 200 else None
+            }
+        except Exception as e:
+            test_results["integration_tests"]["neurons_scraping"] = {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    # Determine overall status
+    component_statuses = [comp.get("status") for comp in test_results["components"].values()]
+    integration_statuses = [test.get("status") for test in test_results["integration_tests"].values()]
+    
+    all_healthy = all(status == "healthy" for status in component_statuses)
+    all_working = all(status == "working" for status in integration_statuses)
+    
+    if all_healthy and all_working:
+        test_results["overall_status"] = "all_systems_operational"
+    elif any(status == "error" for status in component_statuses + integration_statuses):
+        test_results["overall_status"] = "errors_detected"
+    else:
+        test_results["overall_status"] = "partial_functionality"
+    
+    test_results["summary"] = {
+        "components_tested": len(test_results["components"]),
+        "components_healthy": sum(1 for comp in test_results["components"].values() if comp.get("status") == "healthy"),
+        "integration_tests": len(test_results["integration_tests"]),
+        "integration_working": sum(1 for test in test_results["integration_tests"].values() if test.get("status") == "working"),
+        "recommendation": "All systems operational" if test_results["overall_status"] == "all_systems_operational" else "Check failed components"
+    }
+    
+    return test_results
+
 if __name__ == "__main__":
     uvicorn.run(
         app,
